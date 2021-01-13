@@ -10,6 +10,7 @@ from decimal import Decimal
 API_URL = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest'
 CONFIG_FILE = 'crypto.ini'
 API_KEY_ENV = 'COINMARKETCAP_API_KEY'
+ICON_PATH = os.path.join(os.getcwd(), 'cryptocurrency-icons/svg/white')
 
 MIN_PRECISION = 0
 
@@ -138,8 +139,16 @@ class WaybarCrypto(object):
 
                     return None
 
+                coin_icon_path = os.path.join(ICON_PATH, coin_name + '.svg')
+                icon_string = coin_name  # Default icon string to the coin name
+
+                # If an SVG icon exists, read the contents into icon_string
+                if os.path.isfile(coin_icon_path):
+                    with open(coin_icon_path, 'r') as file:
+                        icon_string = file.read().replace('\n', '')
+
                 coins[coin_name] = {
-                    'icon': config[coin_name]['icon'],
+                    'icon': icon_string,
                     'price_precision': price_precision,
                     'change_precision': change_precision,
                     'volume_precision': volume_precision
