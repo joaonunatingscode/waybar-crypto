@@ -1,188 +1,124 @@
 #!/usr/bin/env python3
 
 import sys
-import os
-import requests
-import json
 import configparser
+import os
+import json
 from decimal import Decimal
+
+import requests
 
 API_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
 API_KEY_ENV = "COINMARKETCAP_API_KEY"
 CONFIG_FILE = "config.ini"
+DATA_FILE = "data.ini"
+CLASS_NAME = "crypto"
 
-MIN_PRECISION = 0
+
+class WaybarError(Exception):
+
+    def __init__(self, error_text: str, error_tooltip: str):
+        self.errorText = error_text
+        self.errorTooltip = error_tooltip
+        super().__init__(self.errorText, self.errorTooltip)
+
+    def __str__(self):
+        output_obj = {
+            "text": "crypto: " + self.errorText,
+            "tooltip": self.errorTooltip,
+            "class": CLASS_NAME
+        }
+        return json.dumps(output_obj)
 
 
 class WaybarCrypto(object):
-    """
-    WaybarCrypto parses a config file and processes API data.
 
-    On success WaybarCrypto outputs the following structure to stdout:
+    def __init__(self):
 
-    {
-        "text": "",
-        "tooltip": "Cryptocurrency metrics from Coinmarketcap:",
-        "class": "crypto"
-    }
-    """
+        self.abs_dir = os.path.dirname(os.path.abspath(__file__))
+        self.config_path = f"{self.abs_dir}/{CONFIG_FILE}"
+        self.data_path = f"{self.abs_dir}/{DATA_FILE}"
 
-    def __init__(self, config_path: str):
-        """
-        Take config_path pointting to crypto.ini.
+        self.config = self.__parse_config()
 
-        Parses crypto.ini to self.config
-        """
-        self.config = self.__parse_config_path(config_path)
-
-        if self.config is None:
-            sys.exit(1)
-
-    def __parse_config_path(self, config_path: str):
-        """
-        Load a given config file path and outputs error and returns None on failure.
-
-        Returns:
-        {
-            "coins": [
-                "eth": {
-                    "icon": "",
-                    "precision" 2
-                },
-                ...
-            ],
-            "currency": "eur",
-            "currency_symbol": "€",
-            "display_options: ["1y", "1h", ...],
-            "api_key": "some_key"
-        }
-        """
-        # Attempt to load crypto.ini configuration file
-        config = configparser.ConfigParser(allow_no_value=True, interpolation=None)
-
+    def __parse_config(self):
+        path = self.config_path
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                config.read_file(f)
-        except Exception as e:
-            print(
-                f"Could not find/open config file ({config_path}). Does it exist?\n{e}",
-                file=sys.stderr,
-            )
+            config = configparser.ConfigParser(allow_no_value=True, interpolation=None)
+            config.read(path)
+        except Exception as error:
+            raise(WaybarError("parse config error", "Error while trying to read config file\nError: " + error.__str__()))
 
-            return None
-
-        # Attempt to load API key from environment variable
-        api_key = ""
-        try:
+        if API_KEY_ENV in os.environ:
             api_key = str(os.environ[API_KEY_ENV])
-        except Exception:
-            print(
-                "No API key environment variable found. Defaulting to configuration file.",
-                file=sys.stderr,
-            )
+        else:
+            api_key = config["general"]["api_key"]
 
-        # Attempt to parse required fields of crypto.ini
-        try:
-            # Any section that isn't general, is a coin
-            coin_names = [section for section in config.sections() if section != "general"]
+        currency = config["general"]["currency"].upper()
+        currency_symbol = config["general"]["currency_symbol"]
 
-            # Construct the coins dict
-            coins = {}
-            for coin_name in coin_names:
+        display_options = config["general"]["display"].split(",")
+        display_mode = config["general"]["mode"].lower()
+
+        if display_mode not in ['cycle', 'show_all']:
+            raise(WaybarError("parse config error", "Invalid display mode: " + display_mode))
+
+        coin_names = [section for section in config.sections() if section != "general"]
+
+        coins = {}
+        for coin_name in coin_names:
+            try:
                 price_precision = int(config[coin_name]["price_precision"])
+                if price_precision < 0:
+                    raise(Exception("Precision must be positive"))
+            except Exception as error:
+                raise(WaybarError("parse config error",
+                                  "Invalid price precision for " + coin_name + ".\nError: " + error.__str__()))
+
+            try:
                 change_precision = int(config[coin_name]["change_precision"])
+                if change_precision < 0:
+                    raise (Exception("Precision must be positive"))
+            except Exception as error:
+                raise(WaybarError("parse config error",
+                                  "Invalid change precision for " + coin_name + ".\nError: " + error.__str__()))
+
+            try:
                 volume_precision = int(config[coin_name]["volume_precision"])
+                if volume_precision < 0:
+                    raise(Exception("Precision must be positive"))
+            except Exception as error:
+                raise(WaybarError("parse config error",
+                                  "Invalid volume precision for " + coin_name + ".\nError: " + error.__str__()))
 
-                if type(price_precision) != int:
-                    print(
-                        f"Value price_precision must be an integer value for {coin_name}",
-                        file=sys.stderr,
-                    )
+            coins[coin_name] = {
+                "icon": config[coin_name]["icon"],
+                "price_precision": price_precision,
+                "change_precision": change_precision,
+                "volume_precision": volume_precision,
+            }
 
-                    return None
-
-                if type(change_precision) != int:
-                    print(
-                        f"Value change_precision must be an integer value for {coin_name}",
-                        file=sys.stderr,
-                    )
-
-                    return None
-
-                if type(volume_precision) != int:
-                    print(
-                        f"Value volume_precision must be an integer value for {coin_name}",
-                        file=sys.stderr,
-                    )
-
-                    return None
-
-                if price_precision < MIN_PRECISION:
-                    print(
-                        f"Value price_precision must be greater than {MIN_PRECISION} for {coin_name}",
-                        file=sys.stderr,
-                    )
-
-                    return None
-
-                if change_precision < MIN_PRECISION:
-                    print(
-                        f"Value change_precision must be greater than {MIN_PRECISION} for {coin_name}",
-                        file=sys.stderr,
-                    )
-
-                    return None
-
-                if volume_precision < MIN_PRECISION:
-                    print(
-                        f"Value volume_precision must be greater than {MIN_PRECISION} for {coin_name}",
-                        file=sys.stderr,
-                    )
-
-                    return None
-
-                coins[coin_name] = {
-                    "icon": config[coin_name]["icon"],
-                    "price_precision": price_precision,
-                    "change_precision": change_precision,
-                    "volume_precision": volume_precision,
-                }
-
-            # The fiat currency used in the trading pair
-            currency = config["general"]["currency"].upper()
-            currency_symbol = config["general"]["currency_symbol"]
-
-            # Get a list of the chosen display options
-            display_options = config["general"]["display"].split(",")
-
-            # If API key environment variable didn't exists,
-            # read from config file instead
-            if not api_key:
-                api_key = config["general"]["api_key"]
-
-        except Exception as e:
-            print(
-                f"Could not parse required fields of the configuration file:\n{e}", file=sys.stderr
-            )
-
-            return None
-
-        config_obj = {
+        return {
+            "coin_names": coin_names,
             "coins": coins,
             "currency": currency,
             "currency_symbol": currency_symbol,
             "display_options": display_options,
+            "display_mode": display_mode,
             "api_key": api_key,
         }
 
-        return config_obj
+    def __get_coin_obj(self, coin_name: str):
+        config = self.config
+        coins = config["coins"]
+        return {
+            "icon": coins[coin_name]["icon"],
+            "price_precision": coins[coin_name]["price_precision"],
+            "change_precision": coins[coin_name]["change_precision"],
+            "volume_precision": coins[coin_name]["volume_precision"]
+        }
 
     def __get_coinmarketcap_latest(self):
-        """
-        Return output as shown at https://coinmarketcap.com/api/documentation/v1/#operation/getV1CryptocurrencyQuotesLatest.
-
-        Or None on error
-        """
         # Construct API query parameters
         params = {
             "convert": self.config["currency"].upper(),
@@ -195,97 +131,153 @@ class WaybarCrypto(object):
         # Request the chosen price pairs
         response = requests.get(API_URL, params=params, headers=headers, timeout=2)
         if response.status_code != 200:
-            print(
-                f"Coinmarketcap API returned non 200 response:\n{response.content}",
-                file=sys.stderr,
-            )
-            return None
+            raise(Exception("Status code: " + str(response.status_code)))
 
         try:
             api_json = response.json()
         except ValueError as e:
-            print(f"Could not parse API response body as JSON:\n{e}", file=sys.stderr)
-            return None
+            raise(Exception("Could not parse API response body as JSON. " + e.__str__()))
+
+        try:
+            with open(f"{self.abs_dir}/last_fetch.json", 'w') as file:
+                json.dump(api_json, file)
+        except Exception as e:
+            raise(Exception("Could not save fetch to last_fetch.json. " + e.__str__()))
 
         return api_json
 
-    def get_json(self) -> str:
-        """
-        Return Waybar compatible JSON string.
+    def __get_last_fetch(self):
 
-        Exits with failure code if an error occurs.
-        """
-        api_json = self.__get_coinmarketcap_latest()
-        if api_json is None:
-            sys.exit(1)
+        try:
+            with open(f"{self.abs_dir}/last_fetch.json", 'r') as file:
+                last_fetch = json.load(file)
+        except Exception as e:
+            raise(Exception("Could not get last fetch information from last_fetch.json. " + e.__str__()))
 
-        currency = self.config["currency"]
-        currency_symbol = self.config["currency_symbol"]
-        display_options = self.config["display_options"]
+        return last_fetch
 
-        # Waybar prefers a json output with the following structure.
+    def __build_output(self, coin_name: str, pair_info: dict):
+        coin_obj = self.__get_coin_obj(coin_name)
+        icon = coin_obj["icon"]
+        price_precision = coin_obj["price_precision"]
+        volume_precision = coin_obj["volume_precision"]
+        change_precision = coin_obj["change_precision"]
+        config = self.config
+        display_options = config["display_options"]
+        currency_symbol = config["currency_symbol"]
+
+        output = f"{icon} "
+
+        # Shows price by default
+        if "price" in display_options or not display_options:
+            current_price = round(Decimal(pair_info["price"]), price_precision)
+            output += f"{currency_symbol}{current_price} "
+
+        if "volume24h" in display_options:
+            percentage_change = round(Decimal(pair_info["volume_24h"]), volume_precision)
+            output += f"24hV:{currency_symbol}{percentage_change:+} "
+
+        if "change1h" in display_options:
+            percentage_change = round(Decimal(pair_info["percent_change_1h"]), change_precision)
+            output += f"1h:{percentage_change:+}% "
+
+        if "change24h" in display_options:
+            percentage_change = round(Decimal(pair_info["percent_change_24h"]), change_precision)
+            output += f"24h:{percentage_change:+}% "
+
+        if "change7d" in display_options:
+            percentage_change = round(Decimal(pair_info["percent_change_7d"]), change_precision)
+            output += f"7d:{percentage_change:+}% "
+
+        return output
+
+    def get_obj(self) -> dict:
+
         output_obj = {
             "text": "",
-            "tooltip": "Cryptocurrency metrics from Coinmarketcap:\n",
-            "class": "crypto",
+            "tooltip": "",
+            "class": CLASS_NAME
         }
 
-        # For each coin, populate our output_obj
-        # with a string according to the display_options
-        for coin_name, coin_obj in self.config["coins"].items():
-            icon = coin_obj["icon"]
-            price_precision = coin_obj["price_precision"]
-            volume_precision = coin_obj["volume_precision"]
-            change_precision = coin_obj["change_precision"]
+        config = self.config
+        try:
+            data = configparser.ConfigParser(allow_no_value=True, interpolation=None)
+            data.read(self.data_path)
+        except Exception as error:
+            raise(WaybarError("parse data error", "Error while trying to read data file. " + error.__str__()))
 
-            # Extract the object relevant to our coin/currency pair
-            pair_info = api_json["data"][coin_name.upper()]["quote"][currency]
+        on_click = data.getboolean("general", "on_click")
+        if not on_click:
+            try:
+                api_json = self.__get_coinmarketcap_latest()
+            except Exception as error:
+                raise(WaybarError("coinmarketcap error", error.__str__()))
+        else:
+            try:
+                api_json = self.__get_last_fetch()
+            except Exception as error:
+                raise(WaybarError("local fetch error", error.__str__()))
 
-            output = f"{icon} "
+        text = ""
+        if config["display_mode"] == "cycle":
+            output_obj["tooltip"] = "Cycle mode: press to view other coins"
+            curr_coin_name = data["cycle"]["current"]
+            if curr_coin_name is None or curr_coin_name not in config["coin_names"]:
+                curr_coin_name = config["coin_names"][0]
 
-            # Shows price by default
-            if "price" in display_options or not display_options:
-                current_price = round(Decimal(pair_info["price"]), price_precision)
-                output += f"{currency_symbol}{current_price} "
+            # Cycle next coin if user pressed
+            if on_click:
+                next_index = config["coin_names"].index(curr_coin_name).__add__(1) % len(config["coin_names"])
+                curr_coin_name = config["coin_names"][next_index]
+                data["cycle"]["current"] = curr_coin_name
+                data["general"]["on_click"] = "false"
+                try:
+                    with open(self.data_path, 'w') as file:
+                        data.write(file)
+                except Exception as error:
+                    raise(WaybarError("read data file error", "Error while trying to read data file. " + error.__str__()))
 
-            if "volume24h" in display_options:
-                percentage_change = round(Decimal(pair_info["volume_24h"]), volume_precision)
-                output += f"24hV:{currency_symbol}{percentage_change:+} "
+            pair_info = api_json["data"][curr_coin_name.upper()]["quote"][config["currency"]]
+            text = self.__build_output(curr_coin_name, pair_info)
 
-            if "change1h" in display_options:
-                percentage_change = round(
-                    Decimal(pair_info["percent_change_1h"]), change_precision
-                )
-                output += f"1h:{percentage_change:+}% "
+        elif config["display_mode"] == "show_all":
+            for coin_name, coin_obj in config["coins"].items():
+                pair_info = api_json["data"][coin_name.upper()]["quote"][config["currency"]]
+                text += self.__build_output(coin_name, pair_info)
+            output_obj["tooltip"] = "Show all mode: shows all coins"
 
-            if "change24h" in display_options:
-                percentage_change = round(
-                    Decimal(pair_info["percent_change_24h"]), change_precision
-                )
-                output += f"24h:{percentage_change:+}% "
+            if on_click:
+                data["general"]["on_click"] = "false"
+                try:
+                    with open(self.data_path, 'w') as file:
+                        data.write(file)
+                except Exception as error:
+                    raise(WaybarError("write data file error", "Error while trying to write data file. " + error.__str__()))
+        else:
+            text = "No info"
 
-            if "change7d" in display_options:
-                percentage_change = round(
-                    Decimal(pair_info["percent_change_7d"]), change_precision
-                )
-                output += f"7d:{percentage_change:+}% "
+        output_obj["text"] = text
 
-            output_obj["text"] += output
-            output_obj["tooltip"] += output
+        return output_obj
 
-        return json.dumps((output_obj))
+
+def print_output(output_str: str):
+    sys.stdout.write(output_str)
+    sys.stdout.flush()
 
 
 def main():
-    # Get the absolute path of this script
-    abs_dir = os.path.dirname(os.path.abspath(__file__))
-    config_path = f"{abs_dir}/{CONFIG_FILE}"
 
-    waybar_crypto = WaybarCrypto(config_path)
-    waybar_json = waybar_crypto.get_json()
+    try:
+        waybar_crypto = WaybarCrypto()
 
-    # Write the output_obj dict as a json string to stdout
-    sys.stdout.write(waybar_json)
+        obj = waybar_crypto.get_obj()
+
+        obj_str = json.dumps(obj)
+        print_output(obj_str)
+
+    except WaybarError as error:
+        print_output(error.__str__())
 
 
 if __name__ == "__main__":
